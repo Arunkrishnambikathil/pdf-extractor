@@ -5,6 +5,7 @@ import pandas as pd
 import io
 import time
 import zipfile
+import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="PDF Data Extractor", page_icon="📄")
@@ -74,10 +75,62 @@ def process_pdf(file_bytes):
     }
     return row, timing
 
-# --------------------------------------------------
-# UI
-# --------------------------------------------------
-tab_zip, tab_individual = st.tabs(["📦 Upload a ZIP (recommended for many files)", "📄 Upload PDFs individually"])
+def to_direct_download_link(url):
+    """Convert a Dropbox or Google Drive share link into a direct-download link."""
+    url = url.strip()
+
+    # Dropbox: swap dl=0 for dl=1, or append it
+    if "dropbox.com" in url:
+        if "dl=0" in url:
+            return url.replace("dl=0", "dl=1")
+        if "dl=1" in url:
+            return url
+        sep = "&" if "?" in url else "?"
+        return f"{url}{sep}dl=1"
+
+    # Google Drive: extract the file ID and build the direct-download URL
+    if "drive.google.com" in url:
+        match = re.search(r"/d/([a-zA-Z0-9_-]+)", url) or re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
+        if match:
+            file_id = match.group(1)
+            return f"https://drive.google.com/uc?export=download&id={file_id}"
+
+    return url  # assume it's already a direct link
+
+
+def download_zip_from_url(url, status_callback=None):
+    """Download a (possibly large) file from a URL, handling Google Drive's
+    large-file confirmation step, and return the raw bytes."""
+    direct_url = to_direct_download_link(url)
+    session = requests.Session()
+    response = session.get(direct_url, stream=True, timeout=60)
+
+    # Google Drive shows a "can't scan for viruses" interstitial for big files;
+    # this cookie-based token lets us confirm and get the real file.
+    token = next((v for k, v in response.cookies.items() if k.startswith("download_warning")), None)
+    if token:
+        response = session.get(direct_url, params={"confirm": token}, stream=True, timeout=60)
+
+    response.raise_for_status()
+
+    total = int(response.headers.get("content-length", 0))
+    buffer = io.BytesIO()
+    downloaded = 0
+    for chunk in response.iter_content(chunk_size=1024 * 1024):
+        if chunk:
+            buffer.write(chunk)
+            downloaded += len(chunk)
+            if status_callback and total:
+                status_callback(downloaded / total)
+    buffer.seek(0)
+    return buffer.read()
+
+
+tab_zip, tab_individual, tab_link = st.tabs([
+    "📦 Upload a ZIP",
+    "📄 Upload PDFs individually",
+    "🔗 Paste a Dropbox/Drive link (fastest for large batches)",
+])
 
 file_data = []  # list of (name, bytes)
 
@@ -105,6 +158,33 @@ with tab_individual:
     if uploaded_files:
         st.info(f"{len(uploaded_files)} file(s) selected.")
         file_data = [(f.name, f.read()) for f in uploaded_files]
+
+with tab_link:
+    st.write(
+        "1. Zip your PDFs, upload the zip to **Dropbox** or **Google Drive**\n"
+        "2. Set sharing to \"Anyone with the link\"\n"
+        "3. Paste the share link below — the server will fetch it directly, "
+        "which is often much faster and more reliable than uploading through the browser."
+    )
+    link = st.text_input("Paste your Dropbox or Google Drive share link")
+    if link and st.button("⬇️ Fetch ZIP from link"):
+        link_progress = st.progress(0)
+        link_status = st.empty()
+
+        def _update(frac):
+            link_progress.progress(min(frac, 1.0))
+            link_status.write(f"Downloading… {int(min(frac, 1.0) * 100)}%")
+
+        try:
+            link_status.write("Connecting…")
+            zip_bytes = download_zip_from_url(link, status_callback=_update)
+            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+                pdf_names = [n for n in z.namelist() if n.lower().endswith(".pdf") and not n.startswith("__MACOSX")]
+                for name in pdf_names:
+                    file_data.append((name.split("/")[-1], z.read(name)))
+            link_status.write(f"✅ Downloaded and found {len(file_data)} PDF(s).")
+        except Exception as e:
+            st.error(f"Couldn't fetch that link: {e}")
 
 if st.button("🚀 Process Files", type="primary", disabled=not file_data):
     progress = st.progress(0)
