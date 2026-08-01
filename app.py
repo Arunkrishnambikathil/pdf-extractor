@@ -4,6 +4,7 @@ import re
 import pandas as pd
 import io
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="PDF Data Extractor", page_icon="📄")
@@ -76,20 +77,34 @@ def process_pdf(file_bytes):
 # --------------------------------------------------
 # UI
 # --------------------------------------------------
-uploaded_files = st.file_uploader(
-    "Choose PDF files", type="pdf", accept_multiple_files=True
-)
+tab_zip, tab_individual = st.tabs(["📦 Upload a ZIP (recommended for many files)", "📄 Upload PDFs individually"])
 
-if uploaded_files:
-    st.info(f"{len(uploaded_files)} file(s) selected.")
+file_data = []  # list of (name, bytes)
 
-if st.button("🚀 Process Files", type="primary", disabled=not uploaded_files):
+with tab_zip:
+    st.write("For 10+ files, put all your PDFs into one `.zip` file and upload that — "
+             "it's much faster than uploading each PDF one by one.")
+    zip_file = st.file_uploader("Choose a ZIP file", type="zip", key="zip_uploader")
+    if zip_file is not None:
+        with zipfile.ZipFile(zip_file) as z:
+            pdf_names = [n for n in z.namelist() if n.lower().endswith(".pdf") and not n.startswith("__MACOSX")]
+            for name in pdf_names:
+                file_data.append((name.split("/")[-1], z.read(name)))
+        st.success(f"Found {len(file_data)} PDF(s) inside the ZIP.")
+
+with tab_individual:
+    st.write("For a small number of files, you can upload them directly here instead.")
+    uploaded_files = st.file_uploader(
+        "Choose PDF files", type="pdf", accept_multiple_files=True, key="individual_uploader"
+    )
+    if uploaded_files:
+        st.info(f"{len(uploaded_files)} file(s) selected.")
+        file_data = [(f.name, f.read()) for f in uploaded_files]
+
+if st.button("🚀 Process Files", type="primary", disabled=not file_data):
     progress = st.progress(0)
     status = st.empty()
     run_start = time.perf_counter()
-
-    # Read all bytes up front (uploaded_file.read() must happen on the main thread)
-    file_data = [(f.name, f.read()) for f in uploaded_files]
 
     results_by_index = {}
     timings_by_index = {}
