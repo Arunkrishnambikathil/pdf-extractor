@@ -82,15 +82,20 @@ tab_zip, tab_individual = st.tabs(["📦 Upload a ZIP (recommended for many file
 file_data = []  # list of (name, bytes)
 
 with tab_zip:
-    st.write("For 10+ files, put all your PDFs into one `.zip` file and upload that — "
-             "it's much faster than uploading each PDF one by one.")
-    zip_file = st.file_uploader("Choose a ZIP file", type="zip", key="zip_uploader")
-    if zip_file is not None:
-        with zipfile.ZipFile(zip_file) as z:
-            pdf_names = [n for n in z.namelist() if n.lower().endswith(".pdf") and not n.startswith("__MACOSX")]
-            for name in pdf_names:
-                file_data.append((name.split("/")[-1], z.read(name)))
-        st.success(f"Found {len(file_data)} PDF(s) inside the ZIP.")
+    st.write("For many files, put your PDFs into one or more `.zip` files and upload them here — "
+             "it's much faster than uploading each PDF one by one. "
+             "If you have a very large batch, split it into a few smaller ZIPs "
+             "(e.g. 100 files each) and select them all at once below.")
+    zip_files = st.file_uploader(
+        "Choose ZIP file(s)", type="zip", accept_multiple_files=True, key="zip_uploader"
+    )
+    if zip_files:
+        for zip_file in zip_files:
+            with zipfile.ZipFile(zip_file) as z:
+                pdf_names = [n for n in z.namelist() if n.lower().endswith(".pdf") and not n.startswith("__MACOSX")]
+                for name in pdf_names:
+                    file_data.append((name.split("/")[-1], z.read(name)))
+        st.success(f"Found {len(file_data)} PDF(s) across {len(zip_files)} ZIP file(s).")
 
 with tab_individual:
     st.write("For a small number of files, you can upload them directly here instead.")
