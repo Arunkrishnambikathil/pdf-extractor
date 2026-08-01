@@ -3,6 +3,7 @@ import fitz  # PyMuPDF
 import re
 import pandas as pd
 import io
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 st.set_page_config(page_title="PDF Data Extractor", page_icon="📄")
 
@@ -67,18 +68,40 @@ if uploaded_files:
     st.info(f"{len(uploaded_files)} file(s) selected.")
 
 if st.button("🚀 Process Files", type="primary", disabled=not uploaded_files):
-    results = []
     progress = st.progress(0)
     status = st.empty()
 
-    for i, uploaded_file in enumerate(uploaded_files):
-        status.write(f"Processing: **{uploaded_file.name}**")
-        try:
-            row = process_pdf(uploaded_file.read())
-            results.append(row)
-        except Exception as e:
-            st.error(f"Failed on {uploaded_file.name}: {e}")
-        progress.progress((i + 1) / len(uploaded_files))
+    # Read all bytes up front (uploaded_file.read() must happen on the main thread)
+    file_data = [(f.name, f.read()) for f in uploaded_files]
+
+    results_by_index = {}
+    errors = []
+    done_count = 0
+
+    # Threads help here because PyMuPDF releases the GIL during parsing,
+    # so multiple PDFs get parsed concurrently instead of one at a time.
+    max_workers = min(8, len(file_data))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_index = {
+            executor.submit(process_pdf, data): idx
+            for idx, (name, data) in enumerate(file_data)
+        }
+        for future in as_completed(future_to_index):
+            idx = future_to_index[future]
+            name = file_data[idx][0]
+            try:
+                results_by_index[idx] = future.result()
+            except Exception as e:
+                errors.append(f"{name}: {e}")
+            done_count += 1
+            status.write(f"Processed {done_count} of {len(file_data)} files…")
+            progress.progress(done_count / len(file_data))
+
+    # Preserve original upload order in the output
+    results = [results_by_index[i] for i in sorted(results_by_index)]
+
+    for err in errors:
+        st.error(f"Failed on {err}")
 
     status.write("✅ Done!")
 
